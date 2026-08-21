@@ -1,0 +1,79 @@
+name: PPT Generate
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    if: github.actor == 'tactics83' && startsWith(github.event.issue.title, '[PPT-RUN]')
+    runs-on: ubuntu-latest
+    outputs:
+      final_message: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install slide-master runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc libreoffice fonts-noto-cjk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python .claude/skills/ppt-master/scripts/sync_codex_stubs.py
+
+      - name: Run approved slide-master generation
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':workspace'
+          effort: high
+          prompt: |
+            You are running inside the tactics83/slide-master repository.
+            Follow AGENTS.md and the canonical slide-master routing rules exactly.
+
+            This is STAGE 2 of a two-stage chat orchestration. The issue body contains the original PPT request plus the user's explicit approval of the strategy/design choices produced in Stage 1.
+            Treat that explicit approval as the required user response at the corresponding blocking confirmation gate. Do not invent approval for any choice that is not actually present in the issue body.
+            If another mandatory blocking gate is genuinely required, STOP and report exactly what must be confirmed rather than guessing.
+            Otherwise complete the selected workflow end-to-end, including every required validation and final render/verification gate, and produce the final editable PPTX under the repository's normal projects/<project>/exports/ path.
+            Do not weaken or skip slide-master quality gates.
+            At the end, state the exact generated PPTX path(s) and verification result in Korean.
+
+            APPROVED PPT REQUEST:
+            ${{ github.event.issue.body }}
+
+      - name: Upload generated PPTX and verification renders
+        uses: actions/upload-artifact@v4
+        with:
+          name: slide-master-ppt-${{ github.event.issue.number }}
+          path: |
+            projects/**/exports/*.pptx
+            projects/**/_pptx_render/**
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    needs: generate
+    if: always() && needs.generate.outputs.final_message != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Post generation result back to issue
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.generate.outputs.final_message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `<!-- SLIDE_MASTER_RUN_RESULT -->\n${process.env.CODEX_FINAL_MESSAGE}`,
+            });
