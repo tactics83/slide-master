@@ -1,0 +1,71 @@
+name: PPT Plan
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.actor == 'tactics83' && startsWith(github.event.issue.title, '[PPT-PLAN]')
+    runs-on: ubuntu-latest
+    outputs:
+      final_message: ${{ steps.codex.outputs.final-message }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install slide-master runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc libreoffice fonts-noto-cjk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python .claude/skills/ppt-master/scripts/sync_codex_stubs.py
+
+      - name: Run slide-master strategist
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':workspace'
+          effort: high
+          prompt: |
+            You are running inside the tactics83/slide-master repository.
+            Follow AGENTS.md and the canonical slide-master routing rules exactly.
+
+            This is STAGE 1 of a two-stage chat orchestration.
+            Read the PPT request below, route it correctly, and execute only as far as the first mandatory user-confirmation gate for the selected presentation workflow.
+            For the main SVG route, perform the strategist work required before Step 4 confirmation and then STOP. Do not create slide SVGs and do not export a PPTX in this stage.
+            Return a concise Korean confirmation proposal containing all choices the user must approve, with your recommended values clearly marked.
+            If the request is invalid or missing a prerequisite, explain exactly what is needed instead of guessing.
+
+            PPT REQUEST TITLE:
+            ${{ github.event.issue.title }}
+
+            PPT REQUEST BODY:
+            ${{ github.event.issue.body }}
+
+  report:
+    needs: plan
+    if: needs.plan.outputs.final_message != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Post plan back to request issue
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.plan.outputs.final_message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: `<!-- SLIDE_MASTER_PLAN_READY -->\n${process.env.CODEX_FINAL_MESSAGE}`,
+            });
